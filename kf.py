@@ -34,10 +34,11 @@ class KalmanFilter(object):
         '''
         u = np.array(u).reshape(-1, 1)
         assert Q.shape == (self._dims, self._dims), Q.shape
+        print "x[2] = ", self.x[2]
+        self.x, Jf = self.F(self.x, u, dt)
+        self.P = Jf.dot(self.P).dot(Jf.T) + Q
+        print "x'[2] = ", self.x[2]
 
-        self._x, Jf = self.F(self.x, u, dt)
-        self._P = Jf.dot(self.P).dot(Jf.T) + Q
-        
     def correct(self, z, R):
         '''
         z := sensor vector
@@ -46,12 +47,12 @@ class KalmanFilter(object):
         z = np.array(z).reshape(self._sensors, 1)
         assert R.shape == (self._sensors, self._sensors)
         
-        y, Jh = self.H(self._x, z)
-        S = Jh.dot(self._P).dot(Jh.T) + R
-        K = self._P.dot(Jh.T).dot(np.linalg.inv(S))
+        y, Jh = self.H(self.x, z)
+        S = Jh.dot(self.P).dot(Jh.T) + R
+        K = self.P.dot(Jh.T).dot(np.linalg.inv(S))
 
-        self.x = self._x + K.dot(y)
-        self.P = (np.eye(self._dims) - K.dot(Jh)).dot(self._P)
+        self.x = self.x + K.dot(y)
+        self.P = (np.eye(self._dims) - K.dot(Jh)).dot(self.P)
 
 
 class Aquire(object):
@@ -73,7 +74,8 @@ class Aquire(object):
             self.last_imu = msg
             return
 
-        u = [msg.linear_acceleration.x, msg.linear_acceleration.y, msg.angular_velocity]
+        u = [msg.linear_acceleration.x, msg.linear_acceleration.y, msg.angular_velocity.z]
+        # Not sure how this should be filled out
         Q = np.zeros(6)
         Q[0] = Q[1] = msg.linear_acceleration_covariance[0]  # x0
         Q[3] = Q[4] = msg.linear_acceleration_covariance[4]  # x1
@@ -103,7 +105,7 @@ class Aquire(object):
         self.pub_esitmate()
     
     def pub_esitmate(self):
-        x = self.kf.x
+        x = np.copy(self.kf.x).astype(np.float64)
         px = x[0]
         py = x[1]
         theta = x[2]
@@ -115,7 +117,6 @@ class Aquire(object):
         p.pose.position.y = py
         p.pose.orientation = Quaternion(*tf.transformations.quaternion_from_euler(0, 0, theta))
 
-        np.set_printoptions(precision=2)
         print "x:", np.round(self.kf.x.T, 2)
         print "P:", np.round(self.kf.P.diagonal(), 2)
         print
@@ -134,13 +135,13 @@ if __name__ == "__main__":
 
         new_x = np.copy(x).astype(np.float64)
 
-        new_x[2] += x[5] * dt
         c, s = np.cos(new_x[2]), np.sin(new_x[2]) 
         new_x[0] += 0.5 * u[0] * dt ** 2 + (c * x[3] - s * x[4]) * dt
         new_x[1] += 0.5 * u[1] * dt ** 2 + (s * x[3] + c * x[4]) * dt
+        new_x[2] += x[5] * dt
         new_x[3] += (c * u[0] + s * u[1]) * dt
         new_x[4] += (-s * u[0] + c * u[1]) * dt
-        new_x[5] = u[3]
+        new_x[5] = u[2]
 
         Jf = np.array([[1, 0, 0, c * dt, -s * dt,  0],
                        [0, 1, 0, s * dt,  c * dt,  0],
@@ -154,7 +155,7 @@ if __name__ == "__main__":
 
     def H(x, z):
         # Return the error between the expected obs (H(x)) and the actual observation (z)
-        # z := [x0, x1, theta, thetadot]
+        # z := [x0, x1, theta]
         expected_z = np.zeros(3)
         expected_z[0] = x[0]
         expected_z[1] = x[1]
@@ -169,14 +170,14 @@ if __name__ == "__main__":
         y = z - expected_z.reshape(-1, 1)
 
         # Stupid orientation - compute that error here
-        c, s = np.cos(x[2]), np.sin(x[2])
+        cx, sx = np.cos(x[2]), np.sin(x[2])
         cz, sz = np.cos(z[2]), np.sin(z[2])
-        y[2] = np.arctan2(sz * c - cz * s, cz * c + sz * s )
+        y[2] = np.arctan2(sz * cx - cz * sx, cz * cx + sz * sx )
 
         return y.reshape(-1, 1), Jh
 
-    x0 = np.array([0, 0, 0, 0, 0, 0])
-    P0 = np.diag([1, 1, 1, 1, 1, 1])
+    x0 = np.array([0, 0, 0, 0, 0, .9])
+    P0 = np.diag([1, 1, 1, 1, 1, 1E-5])
      
     kf = KalmanFilter(F, H, x0, P0, num_dims, num_sensors)
 
