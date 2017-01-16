@@ -9,6 +9,57 @@ from geometry_msgs.msg import PoseStamped, Quaternion, Twist
 from sensor_msgs.msg import Imu
 
 
+class State(object):
+    @classmethod
+    def zeros(cls):
+        return cls(*[0] * 14)
+
+    def __init__(self, x, y, z, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz, t):
+        self.x = x; self.y = y; self.z = z
+        self.qx = qx; self.qy = qy; self.qz = qz; self.qw = qw
+        self.vx = vx; self.vy = vy; self.vz = vz
+        self.wx = wx; self.wy = wy; self.wz = wz;
+        self.t = t
+
+    def __repr__(self):
+        return "<{s.x}, {s.y}, {s.z}>".format(s=self)
+
+    def rotation_matrix(self):
+        ''' Maps body -> world '''
+        return tf.transformations.quaternion_matrix([self.qx, self.qy, self.qz, self.qw])[:3, :3]
+
+    def world_v(self):
+        ''' Returns the velocity in the world frame '''
+        return self.rotation_matrix().dot([self.vx, self.vy, self.vz])
+
+    def angular_velocity_quat(self, dt):
+        ''' Returns '''
+        r = np.zeros(4).astype(np.float64)
+        w = np.array([self.wx, self.wy, self.wz]) * dt
+
+        angle = np.linalg.norm(w)
+        r[3] = np.cos(angle / 2)
+        r[:3] = w * np.sin(angle / 2) / angle  # sinc(angle / 2) / 2
+        return r
+
+class InputVector(object):
+    def __init__(self, ax, ay, az, wx, wy, wz):
+        self.ax = ax; self.ay = ay; self.az = az
+        self.wx = wx; self.wy = wy; self.wz = self.wz
+
+    def __repr__(self):
+        return "<{s.ax}, {s.ay}, {s.az}, {s.wx}, {s.wy}, {s.wz}>".format(s=self)
+
+    def body_a(self, x):
+        ''' Returns acceleration in the body frame of the x State '''
+        rot = x.rotation_matrix()
+        return rot.T.dot([self.ax, self.ay, self.az])
+
+
+class ObservationVector(object):
+    pass
+
+
 class KalmanFilter(object):
     def __init__(self, F, H, x0, P0, dims=2, sensors=1):
         '''
@@ -24,7 +75,7 @@ class KalmanFilter(object):
         self.F = F
         self.H = H
 
-        self.x = x0.reshape(self._dims, 1).astype(np.float64)
+        self.x = x0 
         self.P = P0.astype(np.float64)
 
     def predict(self, u, Q, dt):
@@ -128,34 +179,50 @@ if __name__ == "__main__":
     rospy.init_node("kf")
 
     num_sensors = 3
-    num_dims = 6
+    num_dims = 14  # [x, y, z, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz, t]
 
     def F(x, u, dt):
-        # x := [x0, x1, theta, x0dot, x1dot, thetadot]
-        # u := [ax0, ax1]
+        # x := State
+        # u := InputVector
 
-        new_x = np.copy(x).astype(np.float64)
+        # ===============================================================
+        # Compute new State =============================================
+        # ===============================================================
+        new_x = State.zeros() 
 
-        c, s = np.cos(new_x[2]), np.sin(new_x[2]) 
-        new_x[0] += 0.5 * u[0] * dt ** 2 + (c * x[3] - s * x[4]) * dt
-        new_x[1] += 0.5 * u[1] * dt ** 2 + (s * x[3] + c * x[4]) * dt
-        new_x[2] += x[5] * dt
-        new_x[3] += (c * u[0] + s * u[1]) * dt
-        new_x[4] += (-s * u[0] + c * u[1]) * dt
-        new_x[5] = u[2]
+        # x = 1/2*a*t^2 + v*dt + x
+        # But v is in body and a and x are in world frame.
+        world_v = x.world_v()
+        new_x.x = 0.5 * u.ax * dt ** 2 + world_v[0] * dt + x.y
+        new_x.y = 0.5 * u.ay * dt ** 2 + world_v[1] * dt + x.x
+        new_x.z = 0.5 * u.az * dt ** 2 + world_v[2] * dt + x.z
+        
+        # From oritools example
+        dq = x.angular_velocity_quat(dt)
+        q = trns.quaternion_multiply([x.qx, x.qy, x.qz, x.qw], dq) 
+        new_x.qx = q[0]
+        new_x.qy = q[1]
+        new_x.qz = q[2]
+        new_x.qw = q[3]
 
-        # Linearize around the previous esitmate (I think this is right)
-        c, s = np.cos(x[2]), np.sin(x[2])
-        dx0_dx2 = -s * x[3] * dt - c * x[4] * dt
-        dx1_dx2 = -c * x[3] * dt - s * x[4] * dt
-        dx3_dx2 = -s * u[0] * dt + c * u[1] * dt
-        dx4_dx2 = -c * u[0] * dt - s * u[1] * dt 
-        Jf = np.array([[1, 0, dx0_dx2, c * dt, -s * dt,  0],
-                       [0, 1, dx1_dx2, s * dt,  c * dt,  0],
-                       [0, 0,       1,      0,       0, dt],
-                       [0, 0, dx3_dx2,      1,       0,  0],
-                       [0, 0, dx4_dx2,      0,       1,  0],
-                       [0, 0,       0,      0,       0,  0]])
+        # v = a*t + v
+        # But again, v is in body and a is in world
+        body_a = u.body_a(x)
+        new_x.vx = body_a[0] * dt + x.vx 
+        new_x.vy = body_a[1] * dt + x.vy 
+        new_x.vz = body_a[2] * dt + x.vz 
+
+        # Angular velocity comes straight from input 
+        new_x.wx = u.wx
+        new_y.wy = u.wy
+        new_z.wz = u.wz
+
+        # Time goes forward 1 dt
+        new_x.t += dt
+
+        # ===============================================================
+        # Compute Jacobian for this state ===============================
+        # ===============================================================
 
         return new_x, Jf
     

@@ -21,7 +21,7 @@ if __name__ == "__main__":
     rospy.init_node("q_playground")
     pub = rospy.Publisher("/pose", PoseStamped, queue_size=1)
 
-    q0 = trns.quaternion_from_euler(0.9691, -0.76813, -1.83213)
+    q0 = trns.quaternion_from_euler(0, 0, 0)
     rot = trns.quaternion_matrix(q0)[:3, :3]
     w = [0, 0.1, 0]  # x, y, z angular velocities (rad/s ?)
 
