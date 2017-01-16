@@ -3,7 +3,7 @@ import rospy
 import numpy as np
 from tf import transformations
 
-from geometry_msgs.msg import PoseStamped, WrenchStamped, Quaternion, Vector3
+from geometry_msgs.msg import PoseStamped, WrenchStamped, Quaternion, Vector3, Twist
 from sensor_msgs.msg import Imu
 
 
@@ -101,26 +101,28 @@ if __name__ == "__main__":
     pub = rospy.Publisher("pose", PoseStamped, queue_size=10)
     pub_ori = rospy.Publisher("pose_ori", PoseStamped, queue_size=10)
     pub_imu = rospy.Publisher("imu", Imu, queue_size=10)
-    pub_pos_sensor = rospy.Publisher("pos_sensor", PoseStamped, queue_size=10)
+    pub_pos_sensor = rospy.Publisher("sensor", Twist, queue_size=10)
 
     s = State(0, 0, 0, 0, 0, 0)
     z = IMU(s)
 
-    dt = .1
     apply_force = lambda w: s.apply_force([w.wrench.force.x, w.wrench.force.y], w.wrench.torque.z, dt)
     rospy.Subscriber("wrench", WrenchStamped, apply_force)
-    
+    last_time = rospy.Time.now()
+    counter = 0
     while not rospy.is_shutdown():
-        rospy.sleep(dt)
+        rospy.sleep(0.1)
+        dt = (rospy.Time.now() - last_time).to_sec()
+        last_time = rospy.Time.now()
+
         s.step_time(dt)
         p = s.as_PoseStamped()
 
-        cov = 1E-3
+        cov = 1E-2
         # Make IMU measurements
         q, q_cov = z.orientation(s, cov)
         _, _, rz = transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
         pub_ori.publish(State(s.x0, s.x1, rz, s.x0dot, s.x1dot, s.thetadot).as_PoseStamped())
-        rospy.sleep(dt)
 
         av, av_cov = z.angular_vel(s, cov)
         
@@ -142,9 +144,11 @@ if __name__ == "__main__":
 
         # Read position sensor
         sensor_cov = 1E-4
-        x = np.array([s.x0, s.x1]) + np.random.normal(scale=sensor_cov, size=2)
-        p_sensor = p
-        p_sensor.pose.position.x = x[0]
-        p_sensor.pose.position.y = x[1]
-        pub_pos_sensor.publish(p_sensor)
-        
+        x = np.array([s.x0dot, s.x1dot]) + np.random.normal(scale=sensor_cov, size=2)
+        p_sensor = Twist()
+        p_sensor.linear.x = x[0]
+        p_sensor.linear.y = x[1]
+        if counter > 2:
+            pub_pos_sensor.publish(p_sensor)
+            counter = 0
+        counter += 1
