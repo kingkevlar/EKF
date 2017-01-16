@@ -93,7 +93,7 @@ class IMU(object):
         cov_mat[4] = cov
 
         self.last_v = this_v
-        return Vector3(x=a[0], y=a[1], z=0), cov_mat
+        return Vector3(x=a[0] + .5, y=a[1], z=0), cov_mat
 
 
 if __name__ == "__main__":
